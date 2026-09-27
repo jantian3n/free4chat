@@ -1,0 +1,27 @@
+# ==============================================================================
+# Free4Chat Caddy Reverse Proxy Configuration
+# ==============================================================================
+# Set your domain in .env (e.g. DOMAIN=chat.example.com)
+# When DOMAIN is set to a public FQDN, Caddy will automatically issue and
+# renew Let's Encrypt / ZeroSSL TLS certificates.
+# If DOMAIN is unset or "localhost", Caddy will serve over local HTTPS / HTTP.
+
+{$DOMAIN:localhost} {
+    # Reverse proxy to the free4chat application container
+    # Caddy automatically handles WebSocket upgrade requests (/api/sfu/ws, /api/room/agent-events)
+    reverse_proxy free4chat:3000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Compression
+    encode gzip zstd
+
+    # Standard logging
+    log {
+        output stdout
+        format console
+    }
+}

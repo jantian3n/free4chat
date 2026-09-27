@@ -66,6 +66,11 @@ export interface SfuEnv {
   AGENT_MEDIA_ENABLED?: string
   // Experimental Room App host/transport kill switch. Defaults to off.
   ROOM_APPS_ENABLED?: string
+  // Optional local/VPS simulated SFU mode for offline deployment without Cloudflare Calls.
+  SFU_MOCK_ENABLED?: string
+  OFFLINE_MODE?: string
+  ALLOW_ANY_ORIGIN?: string
+  ALLOWED_ORIGINS?: string
 }
 
 function json(data: unknown, status = 200): Response {
@@ -119,10 +124,10 @@ const MISSING_ORIGIN_ALLOWED_ROUTES = new Set([
 // matching how /mcp already treats non-browser callers (its own
 // allowedOriginHostnames). Everywhere else, a missing Origin is rejected
 // exactly like an invalid one, same as before this route-scoping existed.
-function originAllowed(request: Request, route: string): boolean {
+function originAllowed(request: Request, route: string, env?: SfuEnv): boolean {
   const origin = request.headers.get("Origin")
   if (origin === null) return MISSING_ORIGIN_ALLOWED_ROUTES.has(route)
-  return isAllowedOrigin(origin)
+  return isAllowedOrigin(origin, env as never)
 }
 
 async function getAppCredentials(
@@ -276,13 +281,72 @@ function isServerEventsDataChannel(value: unknown): boolean {
   )
 }
 
+let nextMockDataChannelId = 100
+
+function handleMockRealtimeRequest(
+  path: string,
+  init: RequestInit = {}
+): Response {
+  if (path === "/sessions/new") {
+    return json({ sessionId: crypto.randomUUID() }, 200)
+  }
+  if (path.endsWith("/datachannels/establish")) {
+    return json({}, 200)
+  }
+  if (path.endsWith("/datachannels/new")) {
+    let count = 1
+    try {
+      const parsed =
+        typeof init.body === "string" ? JSON.parse(init.body) : null
+      if (Array.isArray(parsed?.dataChannels))
+        count = parsed.dataChannels.length
+    } catch {
+      count = 1
+    }
+    const dataChannels = Array.from({ length: Math.max(1, count) }, () => ({
+      id: (nextMockDataChannelId += 1),
+    }))
+    return json({ dataChannels }, 200)
+  }
+  if (path.endsWith("/datachannels/close")) {
+    return json({ dataChannels: [] }, 200)
+  }
+  if (path.endsWith("/tracks/new")) {
+    return json(
+      {
+        sessionDescription: { type: "answer", sdp: "v=0\r\n" },
+        tracks: [{ mid: "0", trackName: "m-audio" }],
+      },
+      200
+    )
+  }
+  if (path.endsWith("/renegotiate")) {
+    return json({}, 200)
+  }
+  if (path.endsWith("/tracks/close")) {
+    return json({}, 200)
+  }
+  return json({}, 200)
+}
+
 async function realtimeRequest(
   env: SfuEnv,
   path: string,
   init: RequestInit = {}
 ): Promise<Response> {
   const credentials = await getAppCredentials(env)
-  if (!credentials) return json({ error: "sfu_not_configured" }, 503)
+  if (!credentials) {
+    const isMock =
+      env.SFU_MOCK_ENABLED === "true" ||
+      env.OFFLINE_MODE === "true" ||
+      (typeof process !== "undefined" &&
+        (process.env.SFU_MOCK_ENABLED === "true" ||
+          process.env.OFFLINE_MODE === "true"))
+    if (isMock) {
+      return handleMockRealtimeRequest(path, init)
+    }
+    return json({ error: "sfu_not_configured" }, 503)
+  }
   const headers = new Headers(init.headers)
   headers.set("Authorization", `Bearer ${credentials.appSecret}`)
   headers.set("Content-Type", "application/json")
@@ -500,7 +564,7 @@ export async function handleSfuRequest(
   const url = new URL(request.url)
   const route = url.pathname.replace(/^\/api\/sfu\/?/, "")
 
-  if (!originAllowed(request, route))
+  if (!originAllowed(request, route, env))
     return json({ error: "forbidden_origin" }, 403)
 
   if (route === "ws") {

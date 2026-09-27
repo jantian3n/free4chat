@@ -67,7 +67,7 @@ const runtimeFeaturesSchema = z.object({
 // shape but never logs, projects, or includes either value in room_info.
 const runtimeProviderCredentialSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
 
-const MCP_HOSTNAMES = [
+export const MCP_HOSTNAMES = [
   "free4.chat",
   "www.free4.chat",
   "localhost",
@@ -86,6 +86,47 @@ export interface McpEnv {
   MCP_HANDLE_RATE_LIMITER?: AdmissionRateLimiter
   /** #406: pre-DO cadence for wait_for_events. */
   MCP_WAIT_RATE_LIMITER?: AdmissionRateLimiter
+  ALLOW_ANY_HOST?: string
+  ALLOWED_HOSTNAMES?: string
+  APP_URL?: string
+}
+
+export function resolveMcpAllowedHostnames(env?: McpEnv): string[] | undefined {
+  const allowAny =
+    env?.ALLOW_ANY_HOST === "true" ||
+    env?.ALLOW_ANY_HOST === "1" ||
+    (typeof process !== "undefined" &&
+      (process.env.ALLOW_ANY_HOST === "true" ||
+        process.env.ALLOW_ANY_HOST === "1"))
+  if (allowAny) return undefined
+
+  const list = [...MCP_HOSTNAMES]
+  const custom =
+    env?.ALLOWED_HOSTNAMES ||
+    env?.APP_URL ||
+    (typeof process !== "undefined"
+      ? process.env.ALLOWED_HOSTNAMES ||
+        process.env.APP_HOST ||
+        process.env.APP_URL ||
+        process.env.NEXT_PUBLIC_APP_URL
+      : "")
+  if (custom) {
+    for (const item of custom.split(",")) {
+      const trimmed = item.trim()
+      if (!trimmed) continue
+      try {
+        const u = new URL(
+          trimmed.startsWith("http") ? trimmed : `http://${trimmed}`
+        )
+        if (u.hostname && !list.includes(u.hostname)) {
+          list.push(u.hostname)
+        }
+      } catch {
+        if (!list.includes(trimmed)) list.push(trimmed)
+      }
+    }
+  }
+  return list
 }
 
 interface AgentHandle {
@@ -548,7 +589,7 @@ function createMcpServer(context: McpRequestContext) {
         cursor: payload.cursor,
         expiresAt: payload.expiresAt,
         agentLeaseMs: payload.agentLeaseMs,
-        invite: buildRoomInvite(roomId),
+        invite: buildRoomInvite(roomId, env.APP_URL),
       })
     }
   )
@@ -1162,10 +1203,11 @@ export function handleMcpRequest(
   env: McpEnv,
   ctx: ExecutionContext
 ): Promise<Response> {
+  const allowedHostnames = resolveMcpAllowedHostnames(env)
   const handler = createMcpHandler(createMcpServer, {
     route: "/mcp",
-    allowedHostnames: MCP_HOSTNAMES,
-    allowedOriginHostnames: MCP_HOSTNAMES,
+    allowedHostnames,
+    allowedOriginHostnames: allowedHostnames ?? "*",
     // CORS response headers are broad for browser-based MCP inspectors; the
     // explicit origin allowlist above still rejects untrusted browser Origins.
     corsOptions: {

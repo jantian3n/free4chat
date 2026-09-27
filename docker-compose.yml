@@ -1,0 +1,51 @@
+services:
+  free4chat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: free4chat:latest
+    container_name: free4chat
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - PORT=3000
+      - IP=0.0.0.0
+      - PERSIST_DIR=/data
+      - TURNSTILE_DISABLED=true
+      - ALLOW_ANY_ORIGIN=true
+      - ALLOW_ANY_HOST=true
+      - ROOM_APPS_ENABLED=true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Optional automated SSL reverse proxy using Caddy.
+  # To run with SSL: docker compose --profile ssl up -d
+  caddy:
+    image: caddy:2-alpine
+    container_name: free4chat-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - free4chat
+    profiles:
+      - ssl
+
+volumes:
+  caddy_data:
+  caddy_config:
